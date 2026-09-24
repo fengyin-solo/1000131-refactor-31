@@ -1,61 +1,21 @@
-"""库存管理业务规则：状态流转、字段校验与筛选口径都收在这里。"""
+"""库存管理业务声明：必填字段、状态序列与动作映射在 app.modules 中统一登记。
+
+清单读取（筛选/分页）、必填校验与动作判定不再在本模块重复实现，
+统一由 app.services.base.ModuleService 按声明执行；改口径只需改 modules.py。
+"""
 from __future__ import annotations
 
-from typing import Any
-
-from app.store import store
+from app.modules import get_spec
+from app.services.base import ModuleService
 
 MODULE = "inventory"
-REQUIRED_FIELDS = ["库存编码", "货物名称", "批次号"]
-STATUS_ORDER = ["正常", "临近保质期", "已冻结", "已清空"]
-ACTION_RULES = {"冻结库存": "已冻结", "解冻库存": "正常", "盘点修正": "正常"}
-NEGATIVE_ACTIONS = []
 
+# 模块声明（必填字段 / 状态序列 / 动作映射）集中在 app.modules.MODULE_SPECS。
+SPEC = get_spec(MODULE)
+REQUIRED_FIELDS = list(SPEC.required_fields)
+STATUS_ORDER = list(SPEC.status_order)
+ACTION_RULES = dict(SPEC.action_rules)
+NEGATIVE_ACTIONS = list(SPEC.negative_actions)
 
-class InventoryService:
-    def list_entries(
-        self,
-        *,
-        keyword: str | None = None,
-        status: str | None = None,
-        page: int = 1,
-        size: int = 20,
-    ) -> tuple[list[dict[str, Any]], int]:
-        rows = store.rows(MODULE)
-        if keyword:
-            rows = [row for row in rows if keyword in str(row.get("库存编码", ""))]
-        if status:
-            rows = [row for row in rows if row.get("status") == status]
-        total = len(rows)
-        start = max(page - 1, 0) * size
-        return rows[start:start + size], total
-
-    def get_entry(self, entry_id: int) -> dict[str, Any] | None:
-        return store.find(MODULE, entry_id)
-
-    def create_entry(self, values: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
-        missing = [field for field in REQUIRED_FIELDS if not str(values.get(field) or "").strip()]
-        if missing:
-            return None, missing
-        rows = store.rows(MODULE)
-        entry = {"id": max((int(row.get("id", 0)) for row in rows), default=0) + 1}
-        entry.update({field: values.get(field) for field in REQUIRED_FIELDS})
-        entry["status"] = STATUS_ORDER[0]
-        entry["pending"] = True
-        entry["abnormal"] = False
-        rows.append(entry)
-        return entry, []
-
-    def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
-        entry = store.find(MODULE, entry_id)
-        if entry is None:
-            return None, f"库存批次 {entry_id} 不存在或已归档"
-        if action not in ACTION_RULES:
-            return None, f"动作「{action}」不属于库存管理可执行范围"
-        target = ACTION_RULES[action]
-        if target not in STATUS_ORDER:
-            return None, f"目标状态「{target}」不在允许的状态序列里"
-        entry["status"] = target
-        entry["pending"] = target != STATUS_ORDER[-1]
-        entry["abnormal"] = action in NEGATIVE_ACTIONS
-        return entry, f"库存批次已{action}"
+# 共用服务实例；需要定制口径时再在此模块扩展 ModuleService。
+service = ModuleService(SPEC)
